@@ -1,0 +1,5 @@
+# 构建目标芯片
+CONFIG_IDF_TARGET="esp32p4"
+
+# 日志等级
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
