@@ -3,6 +3,17 @@ build/
 sdkconfig
 sdkconfig.old
 
+# 本地辅助脚本和临时日志
+build_log.txt
+*.log.txt
+boot_*.txt
+ports*.txt
+pnp_ports.txt
+procs*.txt
+monitor_output.txt
+reset_log.txt
+esptool_log.txt
+
 # 编辑器
 .vscode/
 .idea/
