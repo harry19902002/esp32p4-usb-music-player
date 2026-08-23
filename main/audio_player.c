@@ -248,7 +248,9 @@ esp_err_t audio_player_play_wav(const char *file_path)
         return ESP_FAIL;
     }
 
-    /* 根据 WAV 头重新配置 codec 采样率/声道 */
+    /* 根据 WAV 头重新配置 codec 采样率/声道
+     * 注意: esp_codec_dev_open 在设备已打开时直接返回(不重配采样率),
+     * 必须先 close 再 open 才能生效 */
     esp_codec_dev_sample_info_t sample_cfg = {
         .bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT,
         .channel = wav.channels > 1 ? 2 : 1,
@@ -256,6 +258,7 @@ esp_err_t audio_player_play_wav(const char *file_path)
         .sample_rate = wav.sample_rate,
         .mclk_multiple = MCLK_MULTIPLE,
     };
+    esp_codec_dev_close(codec_handle);
     if (esp_codec_dev_open(codec_handle, &sample_cfg) != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "Failed to reconfigure codec for %u Hz", wav.sample_rate);
         fclose(f);
