@@ -3,16 +3,25 @@ build/
 sdkconfig
 sdkconfig.old
 
+# 组件管理器下载的组件 (由 idf_component.yml 声明, 自动重新拉取)
+managed_components/
+
 # 本地辅助脚本和临时日志
 build_log.txt
 *.log.txt
 boot_*.txt
+usb_log.txt
+chip_log.txt
+com3_check.txt
 ports*.txt
 pnp_ports.txt
 procs*.txt
 monitor_output.txt
 reset_log.txt
 esptool_log.txt
+
+# 串口抓取脚本 (本地工具, 不提交)
+capture_usb*.ps1
 
 # 编辑器
 .vscode/
