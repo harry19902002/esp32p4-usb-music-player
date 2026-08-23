@@ -24,3 +24,10 @@ CONFIG_FATFS_VOLUME_COUNT=1
 # FATFS 扇区大小: U 盘标准为 512 字节 (默认 4096 会导致普通 U 盘挂载失败)
 CONFIG_FATFS_SECTOR_512=y
 # CONFIG_FATFS_SECTOR_4096 is not set
+
+# FATFS 编码页: 936 简体中文 (支持中文文件名, 默认 437 英文)
+CONFIG_FATFS_CODEPAGE_936=y
+# CONFIG_FATFS_CODEPAGE_437 is not set
+
+# FATFS API 编码: UTF-8 (readdir 直接返回 UTF-8 文件名, 正确支持中文)
+CONFIG_FATFS_API_ENCODING_UTF_8=y

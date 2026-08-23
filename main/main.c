@@ -1,11 +1,12 @@
-/* USB Host MSC - Read USB flash drive and list WAV files
+/* USB Host MSC - Read USB flash drive, list and play WAV files via ES8311
  * Board: Waveshare ESP32-P4-WIFI6-DEV-KIT
  *
  * Features:
  *   1. USB Host Library init, MSC driver install
  *   2. When USB flash drive inserted, mount FATFS to /usb0
  *   3. List all .wav files in root directory
- *   4. BOOT button (GPIO35) toggles: list files again
+ *   4. Play WAV files sequentially via ES8311 codec (I2S + PA GPIO53)
+ *   5. BOOT button (GPIO35) toggles: re-list files
  */
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,7 @@
 #include "usb/usb_host.h"
 #include "usb/msc_host_vfs.h"
 #include "driver/gpio.h"
+#include "audio_player.h"
 
 static const char *TAG = "usb_msc";
 
@@ -237,6 +239,125 @@ static void list_files_all_devices(void)
 }
 
 /**
+ * @brief Play all WAV files in root directory of a mounted device sequentially.
+ * @param slot Device slot index
+ */
+static void play_wav_files(int slot)
+{
+    char mount_path[16];
+    snprintf(mount_path, sizeof(mount_path), MNT_PATH "%d", slot);
+
+    ESP_LOGI(TAG, "=== Collecting WAV files from %s ===", mount_path);
+    struct dirent *d;
+    DIR *dh = opendir(mount_path);
+    if (!dh) {
+        ESP_LOGE(TAG, "Failed to open directory: %s", mount_path);
+        return;
+    }
+
+    /* 收集 WAV 文件名 (最多 64 个) */
+    #define MAX_WAV_FILES 64
+    #define MAX_FNAME_LEN 300   /* mount_path(16) + / + 文件名(最长255) */
+    static char wav_list[MAX_WAV_FILES][MAX_FNAME_LEN];
+    int wav_count = 0;
+
+    /* 递归收集 WAV 文件 (最多 2 层子目录) */
+    #define MAX_DEPTH 2
+    typedef struct {
+        char path[MAX_FNAME_LEN];
+        int depth;
+    } dir_entry_t;
+    static dir_entry_t dir_stack[64];
+    int stack_top = 0;
+    strncpy(dir_stack[0].path, mount_path, MAX_FNAME_LEN - 1);
+    dir_stack[0].path[MAX_FNAME_LEN - 1] = '\0';
+    dir_stack[0].depth = 0;
+    stack_top = 1;
+
+    while (stack_top > 0 && wav_count < MAX_WAV_FILES) {
+        dir_entry_t cur = dir_stack[--stack_top];
+        DIR *dh = opendir(cur.path);
+        if (!dh) {
+            continue;
+        }
+        while ((d = readdir(dh)) != NULL && wav_count < MAX_WAV_FILES) {
+            if (d->d_name[0] == '.') {
+                continue;
+            }
+            if (d->d_type == DT_DIR && cur.depth < MAX_DEPTH) {
+                /* 子目录入栈 (手动拼接避免 format-truncation 警告) */
+                if (stack_top < 64) {
+                    char *dst = dir_stack[stack_top].path;
+                    size_t remain = MAX_FNAME_LEN;
+                    size_t len = strlen(cur.path);
+                    if (len >= remain) { continue; }
+                    memcpy(dst, cur.path, len);
+                    dst[len] = '/';
+                    len++;
+                    size_t nlen = strlen(d->d_name);
+                    if (len + nlen >= remain) { continue; }
+                    memcpy(dst + len, d->d_name, nlen + 1);
+                    dir_stack[stack_top].depth = cur.depth + 1;
+                    stack_top++;
+                }
+            } else if (is_wav_file(d->d_name)) {
+                char *dst = wav_list[wav_count];
+                size_t remain = MAX_FNAME_LEN;
+                size_t len = strlen(cur.path);
+                if (len >= remain) { continue; }
+                memcpy(dst, cur.path, len);
+                dst[len] = '/';
+                len++;
+                size_t nlen = strlen(d->d_name);
+                if (len + nlen >= remain) { continue; }
+                memcpy(dst + len, d->d_name, nlen + 1);
+                ESP_LOGI(TAG, "  [WAV] %s", wav_list[wav_count]);
+                wav_count++;
+            }
+        }
+        closedir(dh);
+    }
+
+    if (wav_count == 0) {
+        ESP_LOGW(TAG, "No .wav files in %s, nothing to play", mount_path);
+        return;
+    }
+    ESP_LOGI(TAG, "Found %d WAV file(s), starting sequential playback", wav_count);
+
+    /* 顺序循环播放 (坏文件失败多次后从列表移除, 避免无限循环) */
+    int idx = 0;
+    int consecutive_fail = 0;
+    while (1) {
+        ESP_LOGI(TAG, "[play] %d/%d: %s", idx + 1, wav_count, wav_list[idx]);
+        esp_err_t ret = audio_player_play_wav(wav_list[idx]);
+        if (ret != ESP_OK) {
+            consecutive_fail++;
+            ESP_LOGE(TAG, "Play failed (%d): %s", consecutive_fail, wav_list[idx]);
+            if (consecutive_fail >= 3) {
+                /* 移除坏文件, 继续下一个 */
+                ESP_LOGW(TAG, "Removing unplayable file: %s", wav_list[idx]);
+                if (wav_count > 1) {
+                    memmove(&wav_list[idx], &wav_list[idx + 1], (wav_count - idx - 1) * MAX_FNAME_LEN);
+                    wav_count--;
+                    /* 不移动 idx, 指向下一个文件 */
+                } else {
+                    ESP_LOGW(TAG, "All files unplayable, waiting for USB re-plug...");
+                    while (1) {
+                        vTaskDelay(pdMS_TO_TICKS(5000));
+                    }
+                }
+            } else {
+                idx = (idx + 1) % wav_count;
+            }
+        } else {
+            consecutive_fail = 0;
+            idx = (idx + 1) % wav_count;
+        }
+        vTaskDelay(pdMS_TO_TICKS(300));   /* 曲目间隔 */
+    }
+}
+
+/**
  * @brief MSC driver callback.
  */
 static void msc_event_cb(const msc_host_event_t *event, void *arg)
@@ -321,6 +442,13 @@ void app_main(void)
     app_queue = xQueueCreate(5, sizeof(app_message_t));
     assert(app_queue);
 
+    // Initialize audio subsystem (I2S + ES8311 codec + PA)
+    esp_err_t audio_ret = audio_player_init();
+    if (audio_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Audio init failed: %s", esp_err_to_name(audio_ret));
+        ESP_LOGW(TAG, "Continuing without audio playback");
+    }
+
     // Create USB task
     BaseType_t task_created = xTaskCreate(usb_task, "usb_task", 4096, NULL, 2, NULL);
     assert(task_created);
@@ -354,8 +482,9 @@ void app_main(void)
             ESP_ERROR_CHECK(msc_host_get_device_info(msc_devices[slot]->msc_device, &info));
             print_device_info(&info);
 
-            // List files on all mounted devices
+            // List files, then start sequential WAV playback
             list_files_all_devices();
+            play_wav_files(slot);
         }
         if (msg.id == APP_DEVICE_DISCONNECTED) {
             int slot = find_slot_by_handle(msg.data.device_handle);
